@@ -1,0 +1,562 @@
+#!/usr/bin/env perl
+#============================================================================
+# FILE:         plpdl
+#
+# USAGE:        ./plpdl [OPTIONS] [URLs]
+#
+# DESCRIPTION:  PerL Porn DownLoader. Works with PornHub, RedTube, Xvideos,
+# 				Youjizz, YouPorn
+#
+# OPTIONS:      Run 'plpdl -h' for help.
+# REQUIREMENTS: Perl 5.10, curl
+# AUTHOR:       https://github.com/plpdl
+# LICENSE:		You are free to modify and redistribute this software 
+# 				provided that a link to the original source is included along
+# 				with this license text. This software comes with absolutely 
+# 				no warranty, to the extent permitted by applicable law. The
+# 				original source can be found at:
+# 				https://github.com/plpdl
+# VERSION:      0.3
+# CREATED:      08/14/2010 02:00 AM
+# REVISION:     03/10/2011 04:08 PM
+#===============================================================================
+use 5.010;
+use strict;
+use warnings;
+
+use autodie;
+use File::Copy;
+use LWP::Simple;
+use POSIX qw( strftime );
+
+# Options ###################################################################
+my $downloader = 'curl'; # curl or wget, or make one up
+
+my $download_dir = "$ENV{HOME}/downloads/plpdl";
+mkdir $download_dir unless -d $download_dir;
+
+my $enable_log  = 1;
+my $logfile     = "$download_dir/plpdl.log"; # must be defined if $enable_log
+my $time_format = "%m%d_%H%M%S";
+
+my $time = &timestamp;
+
+my $trash = "$ENV{HOME}/.local/share/Trash/files";
+# End options ###############################################################
+
+
+
+# Logging ###################
+my $log;
+if ( $enable_log ) {
+    open( $log, ">>", $logfile );
+    say $log "#### plpdl log, $time #####################################\n";
+}
+# End logging ###############
+
+# Global vars ###############
+my $simulate;
+
+my $print_command_file;
+my $command_file;
+
+my $print_url_file;
+my $url_out_file;
+
+my $url_in_file;
+
+my $print_urls;
+
+#my $contents;
+my $dl_url;
+my $out_name;
+my $host;
+
+my @input_urls;
+# end of global vars ########
+
+# Check to see whether any arguments were given; print help text if not.
+if ( @ARGV ) {
+    &check_args( \@ARGV );
+}
+else {
+    &help;
+}
+
+sub check_args { ############################################################
+
+    say $log "begin &check_args" if $log;
+
+    my $ref = shift;
+    my $i = 0;
+
+    for ( @{$ref} ) {
+        if ( /^\-/ ) {
+            if ( /s$/i ) {
+                $simulate = 1;
+                say $log "simulate on" if $log;
+            }
+            elsif ( /c$/i ) {
+                $print_command_file = 1;
+                $command_file = ${$ref}[ $i + 1 ];
+                say $log "\$command_file = '$command_file'"  if $log;
+            }
+            elsif ( /o$/i ) {
+                $print_url_file = 1;
+                $url_out_file = ${$ref}[ $i + 1 ];
+                say $log "\$url_out_file = '$url_out_file'" if $log;
+            }
+            elsif ( /i$/i ) {
+                $url_in_file = ${$ref}[ $i + 1 ];
+				&url_file( $url_in_file );
+                say $log "\$url_in_file = '$url_in_file'" if $log;
+            }
+            elsif ( /u$/i ) {
+                $print_urls = 1;
+            }
+            else {
+                warn "unrecognized option '$_'";
+				&help;
+            }
+        } # end flag block
+        elsif ( m#^(http://|www\.)# ) {
+            push @input_urls, $_;
+            &parse ( $_ );
+            say $log "url: '$_'" if $log;
+        }
+        $i++;
+
+} # end for loop
+    say $log "end &check_args";
+} # end &check_args
+
+
+
+sub clean_up {
+	my @files = <$download_dir/plpdl_cache_*>;
+	for ( @files ) {
+		if ( -f $_ ) {
+			move( $_, $trash );
+		}
+		else {
+			warn "not moving '$_'; it is not a regular file.";
+		}
+	}
+} # end &clean_up
+
+
+
+sub command { ###############################################################
+    my ( $name, $targ ) = @_;
+    my $cmd;
+    say $log "begin &command\n\$name = '$name'\n\$targ = '$targ'";
+
+    if ( $downloader eq 'curl' ) {
+        $cmd = "curl -o '$download_dir/$name' -L '$targ'";
+		#$cmd =~ s/\-O/-L/ if $targ =~ /youporn\.com/;
+    }
+    elsif ( $downloader =~ /wget/ ) {
+        $cmd = "wget --no-check-certificate -O '$download_dir/$name' '$targ'";
+    }
+    else {
+        $cmd = "echo \"name='$name'\nurl='$targ'\n\n\"";
+    }
+
+	if ( $simulate ) {
+		say "\n$cmd";
+	}
+	elsif ( $print_command_file ) {
+		open( my $out, ">>", $command_file );
+		say $command_file "\n$cmd";
+		close $out;
+	}
+	elsif ( $print_url_file ) {
+		open( my $out, ">>", $url_out_file );
+		say $url_out_file "\n$targ";
+		close $out;
+	}
+	elsif ( $print_urls ) {
+		say "\n$targ";
+	}
+	else {
+		system $cmd;
+	}
+
+} # end &command
+
+
+
+sub download { ##############################################################
+    my ( $name, $targ ) = @_;
+    say $log "begin &download\n\$name = '$name'\n\$targ = '$targ'";
+
+    if ( $downloader eq 'curl' ) {
+        system "curl -o '$download_dir/$name' -O '$targ'";
+    }
+    elsif ( $downloader eq 'wget' ) {
+        system "wget --no-check-certificate -O '$download_dir/$name' '$targ'";
+    }
+    say $log "end &download";
+} # end &download
+
+
+
+sub fix_name { ##############################################################
+    my ( $name ) = @_;
+
+	say $log "begin &fix_name\n\$name = '$name'" if $log;
+
+    $name =~ s/[\ !"#\$%'*+,:;?@\\]/_/g;
+    $name =~ s/[()<=>\[\]^`{|}~]/-/g;
+    $name =~ s/&/and/g;
+	if ( $name =~ /\.(mp4|flv)$/ ) {
+		$name =~ s/[_\-]+\.(flv|mp4)?$/.$1/;
+	}
+	else {
+		$name =~ s/[_\-]+$//;
+	}
+
+    return $name;
+	say $log "end &fix_name" if $log;
+}
+
+
+
+sub fix_url { ###############################################################
+    my $url = shift;
+    say $log "\n#####\nsub &fix_url called\n&fixurl: \$url: '$url'\n"
+        if $log;
+    $url =~ s/\s+//g;
+    $url =~ s/%3A/:/g;
+    $url =~ s#%2F#/#g;
+    $url =~ s/%3F/?/g;
+    $url =~ s/(%26|&amp)/&/g;
+    $url =~ s/%3D/=/g;
+    say $log "&fix_url: final \$url: '$url'\n#####\n";
+    return $url;
+} # end &fix_url
+
+
+
+sub get_contents { ##########################################################
+    my $targ = shift;
+	say $log "begin &get_contents\n\$targ = '$targ'" if $log;
+
+
+    my $ts = &timestamp;
+    my $fn = "$download_dir/plpdl_cache_$ts";
+    my $i = 0;
+    while ( -f $fn ) {
+        $fn .= "$i";
+        $i++;
+    }
+
+	# Dirty hack to deal with YouPorn's cookie requirement.
+	# Might need to switch to LWP::UserAgent.
+	if ( $targ =~ /youporn\.com/ ) {
+		system "curl --cookie 'age_check=1' --location '$targ' -o '$fn'";
+	}
+	else {
+		my $contents = getstore( $targ, $fn );
+	}
+
+    return $fn;
+
+	# for youporn, need cookie
+	#
+	# name = 'age_check'
+	# content = '1'
+	# domain = '.youporn.com'
+	# path = '/'
+	# send_for = 'any type of connection'
+	#
+
+} # end &get_contents
+
+
+
+sub get_urls { ##############################################################
+    my $ref = shift;
+    say $log "begin &get_urls\n\$ref = '$ref'" if $log;
+    for ( @{$ref} ) {
+        # Later, this will be used to validate URLS and gather options
+        # The reason that the pattern isn't /^(http|www)/ is so that
+        # the prefix is optional.
+        if ( m#\.(com|net)# ) {
+            push @input_urls, $_;
+            &parse( $_ );
+            say $log "Input URL: '$_'\n" if $log;
+        }
+        else {
+            print "Bad URL: '$_'\n";
+            say $log "Bad URL: '$_'\n";
+        }
+    }
+    say $log "end &get_urls" if $log;
+} # end &get_urls
+
+
+sub help { ##################################################################
+print <<'EOF';
+
+SYNOPSIS
+	plpdl [OPTIONS] URL-1 URL-2 ...
+
+
+OPTIONS
+	-c FILE     print download commands to FILE.
+	-h          print this help text.
+	-i FILE     open page URLs from FILE.
+	-o FILE     print video URLs to FILE.
+	-s          simulate (print download command instead of calling it).
+	-u          print video URLs only.
+
+
+BUGS 
+	Report all problems, requests, and suggestions to:
+	https://github.com/plpdl
+
+EOF
+} # end &help
+
+
+
+sub parse { #################################################################
+    my ( $parse_url ) = shift;
+    say $log "begin &parse\n\@input_url: '$parse_url'\n" if $log;
+
+    my $parse_file = &get_contents( $parse_url );
+
+    if ( $parse_url =~ /pornhub\.com/i ) {
+        &pornhub( $parse_file );
+    }
+    elsif ( $parse_url =~ /redtube\.com/i ) {
+        &redtube( $parse_file );
+    }
+    elsif ( $parse_url =~ /xvideos\.com/i ) {
+        &xvideos( $parse_file );
+    }
+    elsif ( $parse_url =~ /youjizz\.com/i ) {
+        &youjizz( $parse_file );
+    }
+    elsif ( $parse_url =~ /youporn\.com/i ) {
+        &youporn( $parse_file );
+    }
+    else {
+        say "No download module available for: '$parse_url'";
+        say $log "No download module available for: '$parse_url'" if $log;
+    }
+    say $log "end &parse" if $log;
+} #end &parse
+
+
+
+sub pornhub { ###############################################################
+    say $log "begin &pornhub" if $log;
+    my ( $file ) = shift;
+    my $name;
+    my $targ;
+
+    open(my $in,  "<",  $file);
+    my @lines = <$in>;
+    for ( @lines ) {
+		if ( m#<title>(.*)\ \-\ Pornhub\.com</title>#i ) {
+			$name = $1;
+			$name = &fix_name( $name );
+			$name .= '.flv';
+            say $log "&pornhub: \$name: '$name'\n" if $log;
+		}
+		
+        if ( /"video_url"/ ) {
+            $targ = (split '"', $_)[3];
+			$targ = &fix_url( $targ );
+            say $log "&pornhub: \$targ: '$targ'\n" if $log;
+            last;
+        }
+    }
+
+	unless ( $name ) {
+		my $ts = &timestamp;
+		$name = "plpdl_PornHub_$ts.flv";
+	}
+
+    &command( $name, $targ );
+	close $in;
+    say $log "begin &pornhub" if $log;
+} #end &pornhub
+
+
+
+sub redtube { ###############################################################
+    say $log "begin &redtube" if $log;
+    my ( $file ) = shift;
+    my $name;
+    my $targ;
+
+    open(my $in,  "<",  $file);
+    my @lines = <$in>;
+
+    for ( @lines ) {
+        if ( /(content="Watch\s+)(.*)(\s+\-\s+RedTube\s+)/ ) {
+            say $log "desc: '$_'" if $log;
+            $name = $2;
+            $name = &fix_name( $name );
+            say $log "\$name = '$name'" if $log;
+        }
+
+        if ( /source\s+src/ ) {
+            say $log "source line: '$_'" if $log;
+
+            $targ = (split /'/, $_)[1];
+            $name .= "\.$1" if /\.(\w{2,4})\?/;
+            say $log "&find_vid: \$flv_raw: '$targ'\n" if $log;
+            say $log "FILE EXT?\t$name\n" if $log;
+            last;
+        }
+    }
+
+	unless ( $name ) {
+		my $ts = &timestamp;
+		$name = "plpdl_PornHub_$ts.flv";
+	}
+    &command( $name, $targ );
+    close $in;
+    say $log "end &redtube" if $log;
+} # end &redtube
+
+sub timestamp { #############################################################
+    my $timestamp = strftime "$time_format", localtime;
+    return $timestamp;
+} # end &timestamp
+
+
+
+sub url_file { ##############################################################
+	my $fh = shift;
+	say $log "begin &url_file\n\$fh = $fh" if $log;
+	open( my $in,  "<",  $fh );
+	my @lines = <$in>;
+
+	for ( @lines ) {
+		my @words = split /\s+/, $_;
+		for my $w ( @words ) {
+			&parse( $w ) if m#http://|www\.#;
+		}
+	}
+	close $in;
+	say $log "end &url_file" if $log;
+} # end url_file
+
+
+
+sub xvideos { ###############################################################
+    say $log "begin &xvideos" if $log;
+    my ( $file ) = shift;
+    my $name;
+    my $targ;
+
+    open(my $in,  "<",  $file);
+    my @lines = <$in>;
+    for ( @lines ) {
+		if ( m#<title>(.*)\ \-\ XVIDEOS\.COM.*</title>#i ) {
+			$name = $1;
+			$name = &fix_name( $name );
+			$name .= '.flv';
+            say $log "&xvideos: \$name: '$name'\n" if $log;
+		}
+
+        if ( /flv_url=/ ) {
+            $targ = (split ';', (split /flv_url=/, $_)[1])[0];
+			$targ = &fix_url( $targ );
+            say $log "&xvideos: \$targ: '$targ'\n" if $log;
+            last;
+        }
+    }
+
+	unless ( $name ) {
+		my $ts = &timestamp;
+		$name = "plpdl_PornHub_$ts.flv";
+	}
+    &command( $name, $targ );
+
+    say $log "end &xvideos" if $log;
+} #end &xvideos
+
+
+sub youjizz { ###############################################################
+    say $log "begin &youjizz" if $log;
+    my ( $file ) = shift;
+    my $name;
+    my $targ;
+
+    open(my $in,  "<",  $file);
+    my @lines = <$in>;
+    for ( @lines ) {
+		if ( m#<title>(.*)</title>#i ) {
+			$name = $1;
+			$name = &fix_name( $name );
+			$name .= '.flv';
+            say $log "&youjizz: \$name: '$name'\n" if $log;
+		}
+		
+        if ( /"file/ ) {
+            $targ = (split '"', $_)[3];
+            say $log "&youjizz: \$targ: '$targ'\n" if $log;
+            last;
+        }
+    }
+
+	unless ( $name ) {
+		my $ts = &timestamp;
+		$name = "plpdl_PornHub_$ts.flv";
+	}
+    &command( $name, $targ );
+	close $in;
+    say $log "end &youjizz" if $log;
+} #end &youjizz
+
+
+
+sub youporn { ###############################################################
+    say $log "begin &youporn" if $log;
+    my ( $file ) = shift;
+    my $name;
+    my $targ;
+
+    open(my $in,  "<",  $file);
+    my @lines = <$in>;
+    for ( @lines ) {
+		if ( m#<title>(.*)\ \-\ Free.*</title>#i ) {
+			$name = $1;
+			$name = &fix_name( $name );
+			$name .= '.mp4';
+            say $log "&youporn: \$name: '$name'\n" if $log;
+		}
+		
+        if ( /MP4\ \-\ For/ ) {
+            $targ = (split '"', $_)[1];
+            say $log "&youporn: \$targ: '$targ'\n" if $log;
+            last;
+        }
+    }
+
+	unless ( $name ) {
+		my $ts = &timestamp;
+		$name = "plpdl_PornHub_$ts.flv";
+	}
+    &command( $name, $targ );
+
+    say $log "begin &youporn" if $log;
+} #end &youporn
+
+
+
+if ( $log ) {
+    say $log "\n###############################\n\n";
+    close $log;
+}
+
+&clean_up;
+
+exit 0;
+
