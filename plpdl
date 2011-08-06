@@ -300,7 +300,7 @@ sub help { ##################################################################
 print <<'EOF';
 
 SYNOPSIS
-	plpdl [OPTIONS] URL-1 URL-2 ...
+	plpdl [OPTIONS] 'http://url.foo/1' 'http://url.bar/2' ...
 
 
 OPTIONS
@@ -316,6 +316,10 @@ BUGS
 	Report all problems, requests, and suggestions to:
 	https://github.com/plpdl
 
+
+Note: if you passed a URL to the program and got this message, try enclosing 
+the URL in single quotes. Some URLs contain characters that are treated
+specially by the shell.
 EOF
 } # end &help
 
